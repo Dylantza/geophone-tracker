@@ -63,6 +63,9 @@ const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Suppress realtime echo of our own upserts
 const localUpsertIds = new Set<string>();
 
+// Prevent duplicate realtime subscriptions
+let realtimeSubscribed = false;
+
 // Stamp updatedAt on every line mutation
 function touch(line: Line): Line {
   return { ...line, updatedAt: Date.now() };
@@ -265,6 +268,9 @@ export const useStore = create<Store>()(
       },
 
       deleteLine: (lineId) => {
+        // Cancel any pending debounced sync for this line before it fires
+        const timer = syncTimers.get(lineId);
+        if (timer) { clearTimeout(timer); syncTimers.delete(lineId); }
         set((s) => ({
           lines: s.lines.filter((l) => l.id !== lineId),
           activeLine: s.activeLine === lineId ? null : s.activeLine,
@@ -361,13 +367,19 @@ export const useStore = create<Store>()(
       },
 
       subscribeToChanges: () => {
-        if (!supabase) return;
+        if (!supabase || realtimeSubscribed) return;
+        realtimeSubscribed = true;
         supabase
           .channel('lines-realtime')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
             if (payload.eventType === 'DELETE') {
               const id = (payload.old as { id: string }).id;
-              set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
+              const timer = syncTimers.get(id);
+              if (timer) { clearTimeout(timer); syncTimers.delete(id); }
+              set((s) => ({
+                lines: s.lines.filter((l) => l.id !== id),
+                pendingSync: s.pendingSync.filter((pid) => pid !== id),
+              }));
               return;
             }
             const incoming = payload.new as { id: string; data: string };
