@@ -12,6 +12,7 @@ interface Store {
   activeLine: string | null;
   activeGeophoneIndex: number;
   syncStatus: SyncStatus;
+  pendingSync: string[];          // line IDs waiting to be pushed (array for persist compat)
 
   login: (username: string) => void;
   logout: () => void;
@@ -33,6 +34,7 @@ interface Store {
   deleteLine: (lineId: string) => void;
 
   syncLine: (lineId: string) => Promise<void>;
+  flushPending: () => Promise<void>;
   mergeFromCloud: () => Promise<void>;
   subscribeToChanges: () => void;
 }
@@ -55,11 +57,39 @@ function makeGeophones(count: number): Geophone[] {
   }));
 }
 
-// Debounce map — avoid hammering Supabase on rapid hits
+// Debounce per-line cloud pushes
 const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-// Track our own in-flight upserts so realtime doesn't echo them back
+// Suppress realtime echo of our own upserts
 const localUpsertIds = new Set<string>();
+
+// Stamp updatedAt on every line mutation
+function touch(line: Line): Line {
+  return { ...line, updatedAt: Date.now() };
+}
+
+function mutateLine(lines: Line[], id: string, fn: (l: Line) => Line): Line[] {
+  return lines.map((l) => l.id === id ? touch(fn(l)) : l);
+}
+
+async function pushToSupabase(line: Line): Promise<boolean> {
+  if (!supabase) return true; // no cloud configured — treat as success
+  localUpsertIds.add(line.id);
+  try {
+    const { error } = await supabase.from('lines').upsert({
+      id: line.id,
+      name: line.name,
+      data: JSON.stringify(line),
+      updated_at: new Date(line.updatedAt).toISOString(),
+    });
+    if (error) throw error;
+    return true;
+  } catch {
+    return false;
+  } finally {
+    setTimeout(() => localUpsertIds.delete(line.id), 3000);
+  }
+}
 
 export const useStore = create<Store>()(
   persist(
@@ -70,6 +100,7 @@ export const useStore = create<Store>()(
       activeLine: null,
       activeGeophoneIndex: 0,
       syncStatus: 'saved',
+      pendingSync: [],
 
       login: (username) => set({ loggedIn: true, username }),
       logout: () => set({ loggedIn: false, username: '', activeLine: null }),
@@ -83,6 +114,7 @@ export const useStore = create<Store>()(
           hitCounter: 0,
           lineNotes: [],
           createdAt: Date.now(),
+          updatedAt: Date.now(),
         };
         set((s) => ({ lines: [...s.lines, line], activeLine: id, activeGeophoneIndex: 0 }));
         get().syncLine(id);
@@ -94,22 +126,19 @@ export const useStore = create<Store>()(
 
       replaceSensor: (lineId, position, newSensorId) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position === position ? { ...g, sensorId: newSensorId } : g
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position === position ? { ...g, sensorId: newSensorId } : g
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
 
       addHit: (lineId, position, invalid = false) => {
         set((s) => ({
-          lines: s.lines.map((l) => {
-            if (l.id !== lineId) return l;
+          lines: mutateLine(s.lines, lineId, (l) => {
             const totalHits = l.geophones.reduce((sum, g) => sum + g.hits.length, 0);
             const nextHit = totalHits + 1;
             return {
@@ -128,15 +157,17 @@ export const useStore = create<Store>()(
 
       undoLastHit: (lineId, position) => {
         set((s) => ({
-          lines: s.lines.map((l) => {
-            if (l.id !== lineId) return l;
+          lines: mutateLine(s.lines, lineId, (l) => {
             const geo = l.geophones.find((g) => g.position === position);
             if (!geo || geo.hits.length === 0) return l;
             const newGeophones = l.geophones.map((g) =>
               g.position === position ? { ...g, hits: g.hits.slice(0, -1) } : g
             );
-            const newCounter = newGeophones.reduce((sum, g) => sum + g.hits.length, 0);
-            return { ...l, hitCounter: newCounter, geophones: newGeophones };
+            return {
+              ...l,
+              hitCounter: newGeophones.reduce((sum, g) => sum + g.hits.length, 0),
+              geophones: newGeophones,
+            };
           }),
         }));
         get().syncLine(lineId);
@@ -144,47 +175,41 @@ export const useStore = create<Store>()(
 
       toggleHitValidity: (lineId, position, hitNumber) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position !== position ? g : {
-                  ...g,
-                  hits: g.hits.map((h) =>
-                    h.hitNumber === hitNumber ? { ...h, invalid: !h.invalid } : h
-                  ),
-                }
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position !== position ? g : {
+                ...g,
+                hits: g.hits.map((h) =>
+                  h.hitNumber === hitNumber ? { ...h, invalid: !h.invalid } : h
+                ),
+              }
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
 
       skipGeophone: (lineId, position) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position === position ? { ...g, skipped: true } : g
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position === position ? { ...g, skipped: true } : g
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
 
       unskipGeophone: (lineId, position) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position === position ? { ...g, skipped: false } : g
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position === position ? { ...g, skipped: false } : g
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
@@ -193,28 +218,26 @@ export const useStore = create<Store>()(
         if (!text.trim()) return;
         const entry = { id: makeNoteId(), text: text.trim(), createdAt: Date.now() };
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position === position ? { ...g, notes: [...g.notes, entry] } : g
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position === position ? { ...g, notes: [...g.notes, entry] } : g
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
 
       deleteNote: (lineId, position, noteId) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : {
-              ...l,
-              geophones: l.geophones.map((g) =>
-                g.position === position ? { ...g, notes: g.notes.filter((n) => n.id !== noteId) } : g
-              ),
-            }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            geophones: l.geophones.map((g) =>
+              g.position === position
+                ? { ...g, notes: g.notes.filter((n) => n.id !== noteId) }
+                : g
+            ),
+          })),
         }));
         get().syncLine(lineId);
       },
@@ -223,18 +246,20 @@ export const useStore = create<Store>()(
         if (!text.trim()) return;
         const entry = { id: makeNoteId(), text: text.trim(), createdAt: Date.now() };
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : { ...l, lineNotes: [...(l.lineNotes ?? []), entry] }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            lineNotes: [...(l.lineNotes ?? []), entry],
+          })),
         }));
         get().syncLine(lineId);
       },
 
       deleteLineNote: (lineId, noteId) => {
         set((s) => ({
-          lines: s.lines.map((l) =>
-            l.id !== lineId ? l : { ...l, lineNotes: (l.lineNotes ?? []).filter((n) => n.id !== noteId) }
-          ),
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            lineNotes: (l.lineNotes ?? []).filter((n) => n.id !== noteId),
+          })),
         }));
         get().syncLine(lineId);
       },
@@ -243,77 +268,95 @@ export const useStore = create<Store>()(
         set((s) => ({
           lines: s.lines.filter((l) => l.id !== lineId),
           activeLine: s.activeLine === lineId ? null : s.activeLine,
+          pendingSync: s.pendingSync.filter((id) => id !== lineId),
         }));
-        if (supabase) {
-          supabase.from('lines').delete().eq('id', lineId).then(() => {});
-        }
+        if (supabase) supabase.from('lines').delete().eq('id', lineId).then(() => {});
       },
 
       syncLine: async (lineId) => {
-        // Always save locally first (already done via set)
-        // Debounce the cloud push — wait 800ms after last change
-        set({ syncStatus: 'pending' });
+        // Data is already saved to localStorage by the set() call in the action above.
+        // Now schedule a debounced cloud push.
+        set((s) => ({
+          syncStatus: 'pending',
+          pendingSync: s.pendingSync.includes(lineId) ? s.pendingSync : [...s.pendingSync, lineId],
+        }));
+
         const existing = syncTimers.get(lineId);
         if (existing) clearTimeout(existing);
 
         const timer = setTimeout(async () => {
           syncTimers.delete(lineId);
-          if (!supabase) return;
           const line = get().lines.find((l) => l.id === lineId);
           if (!line) return;
+
           set({ syncStatus: 'saving' });
-          localUpsertIds.add(lineId);
-          try {
-            const { error } = await supabase.from('lines').upsert({
-              id: line.id,
-              name: line.name,
-              data: JSON.stringify(line),
-              updated_at: new Date().toISOString(),
+          const ok = await pushToSupabase(line);
+
+          if (ok) {
+            set((s) => {
+              const next = s.pendingSync.filter((id) => id !== lineId);
+              return { syncStatus: next.length === 0 ? 'saved' : 'pending', pendingSync: next };
             });
-            if (error) throw error;
-            set({ syncStatus: 'saved' });
-          } catch (e) {
-            console.warn('Sync failed, will retry on next change', e);
+          } else {
+            // Leave in pendingSync — flushPending will retry
             set({ syncStatus: 'error' });
-          } finally {
-            setTimeout(() => localUpsertIds.delete(lineId), 2000);
           }
         }, 800);
 
         syncTimers.set(lineId, timer);
       },
 
+      flushPending: async () => {
+        const { pendingSync, lines } = get();
+        if (pendingSync.length === 0 || !supabase) return;
+        set({ syncStatus: 'saving' });
+        const failed: string[] = [];
+        for (const id of pendingSync) {
+          const line = lines.find((l) => l.id === id);
+          if (!line) continue;
+          const ok = await pushToSupabase(line);
+          if (!ok) failed.push(id);
+        }
+        set({ pendingSync: failed, syncStatus: failed.length === 0 ? 'saved' : 'error' });
+      },
+
       mergeFromCloud: async () => {
         if (!supabase) return;
         try {
-          const { data } = await supabase
-            .from('lines')
-            .select('data')
-            .order('updated_at', { ascending: false });
+          const { data } = await supabase.from('lines').select('data, updated_at');
           if (!data) return;
+
           const cloudLines: Line[] = data.map((r) => JSON.parse(r.data));
+          const cloudMap = new Map(cloudLines.map((l) => [l.id, l]));
+
           set((s) => {
-            // Merge: cloud wins for existing lines, keep local-only lines too
-            const cloudMap = new Map(cloudLines.map((l) => [l.id, l]));
             const localMap = new Map(s.lines.map((l) => [l.id, l]));
             const merged: Line[] = [];
-            // All cloud lines
-            for (const cl of cloudLines) merged.push(cl);
-            // Local-only lines not yet pushed
-            for (const ll of s.lines) {
-              if (!cloudMap.has(ll.id)) merged.push(ll);
-            }
-            // Push any local lines that aren't in cloud yet
-            for (const ll of s.lines) {
-              if (!cloudMap.has(ll.id)) {
-                get().syncLine(ll.id);
+
+            // For each cloud line: take whichever version is newer
+            for (const cl of cloudLines) {
+              const local = localMap.get(cl.id);
+              if (local && (local.updatedAt ?? 0) > (cl.updatedAt ?? 0)) {
+                // Local is newer — keep local, but schedule push
+                merged.push(local);
+                setTimeout(() => get().syncLine(cl.id), 100);
+              } else {
+                merged.push(cl);
               }
             }
-            void localMap;
+
+            // Local-only lines (not yet pushed to cloud) — keep and push
+            for (const ll of s.lines) {
+              if (!cloudMap.has(ll.id)) {
+                merged.push(ll);
+                setTimeout(() => get().syncLine(ll.id), 100);
+              }
+            }
+
             return { lines: merged };
           });
-        } catch (e) {
-          console.warn('Load from cloud failed', e);
+        } catch {
+          // Network failure — local data already intact, will retry on next merge
         }
       },
 
@@ -328,15 +371,16 @@ export const useStore = create<Store>()(
               return;
             }
             const incoming = payload.new as { id: string; data: string };
-            // Skip if this is our own upsert echoing back
-            if (localUpsertIds.has(incoming.id)) return;
-            const line: Line = JSON.parse(incoming.data);
+            if (localUpsertIds.has(incoming.id)) return; // our own echo
+            const remote: Line = JSON.parse(incoming.data);
             set((s) => {
-              const exists = s.lines.find((l) => l.id === line.id);
-              if (exists) {
-                return { lines: s.lines.map((l) => l.id === line.id ? line : l) };
+              const local = s.lines.find((l) => l.id === remote.id);
+              // Only apply remote if it's actually newer than what we have
+              if (local && (local.updatedAt ?? 0) > (remote.updatedAt ?? 0)) return s;
+              if (local) {
+                return { lines: s.lines.map((l) => l.id === remote.id ? remote : l) };
               }
-              return { lines: [...s.lines, line] };
+              return { lines: [...s.lines, remote] };
             });
           })
           .subscribe();
@@ -344,23 +388,27 @@ export const useStore = create<Store>()(
     }),
     {
       name: 'geophone-store',
-      version: 2,
+      version: 3,
       migrate: (persisted: unknown) => {
         const state = persisted as Record<string, unknown>;
         if (!Array.isArray(state.lines)) return state;
+        const now = Date.now();
         state.lines = (state.lines as Line[]).map((l) => ({
           ...l,
-          lineNotes: (l as unknown as Record<string, unknown>).lineNotes
+          updatedAt: (l as unknown as Record<string, unknown>).updatedAt
+            ? l.updatedAt
+            : now,
+          lineNotes: Array.isArray(l.lineNotes)
             ? l.lineNotes
             : (l as unknown as Record<string, unknown>).lineNote
-              ? [{ id: makeNoteId(), text: (l as unknown as Record<string, unknown>).lineNote as string, createdAt: Date.now() }]
+              ? [{ id: makeNoteId(), text: (l as unknown as Record<string, unknown>).lineNote as string, createdAt: now }]
               : [],
           geophones: l.geophones.map((g) => ({
             ...g,
             notes: Array.isArray(g.notes)
               ? g.notes
               : (g as unknown as Record<string, unknown>).note
-                ? [{ id: makeNoteId(), text: (g as unknown as Record<string, unknown>).note as string, createdAt: Date.now() }]
+                ? [{ id: makeNoteId(), text: (g as unknown as Record<string, unknown>).note as string, createdAt: now }]
                 : [],
           })),
         }));
@@ -369,3 +417,17 @@ export const useStore = create<Store>()(
     }
   )
 );
+
+// Auto-retry pending syncs when network comes back online
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => {
+    useStore.getState().flushPending();
+  });
+  // Also retry every 30s if there are pending items
+  setInterval(() => {
+    const { pendingSync, syncStatus } = useStore.getState();
+    if (pendingSync.length > 0 && syncStatus === 'error') {
+      useStore.getState().flushPending();
+    }
+  }, 30_000);
+}

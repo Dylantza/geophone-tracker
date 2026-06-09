@@ -607,15 +607,28 @@ function GoToInput({ max, onGo }: { max: number; onGo: (n: number) => void }) {
 type Screen = 'home' | 'new-line' | 'line-setup' | 'recording';
 
 export default function App() {
-  const { loggedIn, setActiveLine, mergeFromCloud, subscribeToChanges, syncStatus } = useStore();
+  const { loggedIn, setActiveLine, mergeFromCloud, subscribeToChanges, syncStatus, pendingSync } = useStore();
   const [screen, setScreen] = useState<Screen>('home');
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  const flushPending = useStore((s) => s.flushPending);
 
   useEffect(() => {
     if (loggedIn) {
       mergeFromCloud();
       subscribeToChanges();
     }
+  }, [loggedIn]);
+
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible' && loggedIn) {
+        flushPending();
+        mergeFromCloud();
+      }
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
   }, [loggedIn]);
 
   if (!loggedIn) return <Login />;
@@ -631,7 +644,11 @@ export default function App() {
     setScreen('line-setup');
   }
 
-  const syncLabel = syncStatus === 'saving' ? '↑ saving…' : syncStatus === 'pending' ? '● pending' : syncStatus === 'error' ? '✕ no sync' : '✓ saved';
+  const pendingCount = pendingSync.length;
+  const syncLabel = syncStatus === 'saving' ? '↑ saving…'
+    : syncStatus === 'error' ? `✕ ${pendingCount} unsaved`
+    : syncStatus === 'pending' ? `● ${pendingCount} pending`
+    : '✓ saved';
   const syncClass = `sync-pill sync-${syncStatus}`;
 
   return (

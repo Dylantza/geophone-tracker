@@ -24,6 +24,7 @@ export interface Line {
   hitCounter: number;
   lineNotes: Note[];      // multiple notes for the whole line
   createdAt: number;
+  updatedAt: number;      // ms timestamp — used to pick winner when merging
   completedAt?: number;
 }
 
