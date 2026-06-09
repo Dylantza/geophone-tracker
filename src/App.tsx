@@ -494,6 +494,7 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceVal, setReplaceVal] = useState('');
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const prevGeoIndex = useRef(-1);
   const prevValidHits = useRef(0);
 
   const geo = line?.geophones[activeGeophoneIndex];
@@ -507,20 +508,18 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
 
   useEffect(() => {
     if (!line || !geo) return;
-    // Only fire when crossing the 3-valid threshold upward (not already at 3+)
+    if (prevGeoIndex.current !== activeGeophoneIndex) {
+      prevGeoIndex.current = activeGeophoneIndex;
+      prevValidHits.current = validHits;
+      setNoteText('');
+      return;
+    }
     if (validHits >= 3 && prevValidHits.current < 3) {
       playBeep();
       if (line.autoAdvance && !isLast) setTimeout(() => setActiveGeophone(activeGeophoneIndex + 1), 400);
     }
     prevValidHits.current = validHits;
-  }, [validHits]);
-
-  // Seed prevValidHits with the current geo's existing valid hits so navigating
-  // to a geo that already has 3+ hits never re-triggers auto-advance
-  useEffect(() => {
-    prevValidHits.current = geo?.hits.filter((h) => !h.invalid).length ?? 0;
-    setNoteText('');
-  }, [activeGeophoneIndex, lineId]);
+  });
 
   if (!line || !geo) return null;
 
