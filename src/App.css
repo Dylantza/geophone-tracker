@@ -730,6 +730,19 @@ html, body, #root {
   border-radius: 3px;
   padding: 2px 5px;
 }
+.auto-badge-btn {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  border-radius: 3px;
+  padding: 3px 7px;
+  cursor: pointer;
+  border: 1px solid;
+  transition: all 0.15s;
+}
+.auto-on  { color: var(--teal); background: rgba(0,212,200,0.1); border-color: rgba(0,212,200,0.35); }
+.auto-off { color: var(--dim);  background: rgba(255,255,255,0.03); border-color: var(--border); }
 
 /* ── Setup settings ── */
 .setup-settings {
@@ -773,4 +786,21 @@ html, body, #root {
   border-color: rgba(0,212,200,0.4);
   background: rgba(0,212,200,0.08);
 }
+
+/* ── Export tree ── */
+.modal-tall { max-height: 85dvh; overflow-y: auto; }
+.export-tree { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; max-height: 40dvh; overflow-y: auto; }
+.export-project { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+.export-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.export-proj-row { background: var(--card); }
+.export-proj-name { font-size: 14px; font-weight: 700; letter-spacing: 0.06em; }
+.export-day { border-top: 1px solid var(--border); }
+.export-day-row { background: var(--surface); font-size: 13px; padding: 6px 12px 6px 24px; }
+.export-date { color: var(--dim); font-family: var(--mono); font-size: 11px; margin-left: 6px; }
+.export-line-row { padding: 5px 12px 5px 40px; font-size: 13px; font-weight: 500; color: var(--dim); }
+.export-line-row:hover { background: rgba(255,255,255,0.03); }
+.btn-xs { font-size: 11px; padding: 2px 6px; }
+
+/* ── Scan day date badge ── */
+.line-card-date { font-family: var(--mono); font-size: 11px; color: var(--dim); }
 
