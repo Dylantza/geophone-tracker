@@ -515,9 +515,12 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
     prevValidHits.current = validHits;
   }, [validHits]);
 
-  // Reset prev ref to 0 on geophone change so arriving at a geo that already
-  // has 3 hits doesn't re-trigger auto-advance
-  useEffect(() => { prevValidHits.current = 0; setNoteText(''); }, [activeGeophoneIndex, lineId]);
+  // Seed prevValidHits with the current geo's existing valid hits so navigating
+  // to a geo that already has 3+ hits never re-triggers auto-advance
+  useEffect(() => {
+    prevValidHits.current = geo?.hits.filter((h) => !h.invalid).length ?? 0;
+    setNoteText('');
+  }, [activeGeophoneIndex, lineId]);
 
   if (!line || !geo) return null;
 
