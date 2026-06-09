@@ -134,19 +134,19 @@ function Home({ onSelectLine, onNewLine }: {
           const done = line.geophones.filter((g) => g.hits.length >= 3 || g.skipped).length;
           const pct = Math.round((done / total) * 100);
           return (
-            <div key={line.id} className="line-card">
+            <div key={line.id} className="line-card" onClick={() => onSelectLine(line.id)}>
               <div className="line-card-header">
-                <div className="line-card-name" onClick={() => onSelectLine(line.id)}>{line.name}</div>
-                <button className="btn-delete-line" onClick={() => setConfirmDelete(line.id)}>✕</button>
+                <div className="line-card-name">{line.name}</div>
+                <button className="btn-delete-line" onClick={(e) => { e.stopPropagation(); setConfirmDelete(line.id); }}>✕</button>
               </div>
-              <div className="line-card-meta" onClick={() => onSelectLine(line.id)}>
+              <div className="line-card-meta">
                 <span>{total} geophones</span>
                 <span>{line.hitCounter} hits recorded</span>
               </div>
-              <div className="progress-bar" onClick={() => onSelectLine(line.id)}>
+              <div className="progress-bar">
                 <div className="progress-fill" style={{ width: `${pct}%` }} />
               </div>
-              <div className="progress-label" onClick={() => onSelectLine(line.id)}>{pct}% complete</div>
+              <div className="progress-label">{pct}% complete</div>
             </div>
           );
         })}
