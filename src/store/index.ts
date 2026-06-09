@@ -372,6 +372,7 @@ export const useStore = create<Store>()(
         supabase
           .channel('lines-realtime')
           .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
+            console.log('[realtime] event:', payload.eventType, payload);
             if (payload.eventType === 'DELETE') {
               const id = (payload.old as { id: string }).id;
               const timer = syncTimers.get(id);
@@ -383,11 +384,10 @@ export const useStore = create<Store>()(
               return;
             }
             const incoming = payload.new as { id: string; data: string };
-            if (localUpsertIds.has(incoming.id)) return; // our own echo
+            if (localUpsertIds.has(incoming.id)) return;
             const remote: Line = JSON.parse(incoming.data);
             set((s) => {
               const local = s.lines.find((l) => l.id === remote.id);
-              // Only apply remote if it's actually newer than what we have
               if (local && (local.updatedAt ?? 0) > (remote.updatedAt ?? 0)) return s;
               if (local) {
                 return { lines: s.lines.map((l) => l.id === remote.id ? remote : l) };
@@ -395,7 +395,9 @@ export const useStore = create<Store>()(
               return { lines: [...s.lines, remote] };
             });
           })
-          .subscribe();
+          .subscribe((status) => {
+            console.log('[realtime] subscription status:', status);
+          });
       },
     }),
     {
