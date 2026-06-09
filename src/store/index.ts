@@ -336,14 +336,12 @@ export const useStore = create<Store>()(
           const cloudMap = new Map(cloudLines.map((l) => [l.id, l]));
 
           set((s) => {
-            const localMap = new Map(s.lines.map((l) => [l.id, l]));
             const merged: Line[] = [];
 
             // For each cloud line: take whichever version is newer
             for (const cl of cloudLines) {
-              const local = localMap.get(cl.id);
+              const local = s.lines.find((l) => l.id === cl.id);
               if (local && (local.updatedAt ?? 0) > (cl.updatedAt ?? 0)) {
-                // Local is newer — keep local, but schedule push
                 merged.push(local);
                 setTimeout(() => get().syncLine(cl.id), 100);
               } else {
@@ -351,18 +349,20 @@ export const useStore = create<Store>()(
               }
             }
 
-            // Local-only lines (not yet pushed to cloud) — keep and push
+            // Local-only lines not yet in cloud — keep and push
             for (const ll of s.lines) {
-              if (!cloudMap.has(ll.id)) {
+              if (!cloudMap.has(ll.id) && s.pendingSync.includes(ll.id)) {
+                // Still pending push — keep it locally and retry
                 merged.push(ll);
                 setTimeout(() => get().syncLine(ll.id), 100);
               }
+              // If not in cloud and not pending, it was deleted remotely — drop it
             }
 
             return { lines: merged };
           });
         } catch {
-          // Network failure — local data already intact, will retry on next merge
+          // Network failure — local data intact, retry on next merge
         }
       },
 
