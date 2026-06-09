@@ -63,27 +63,6 @@ const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
 // Suppress realtime echo of our own upserts
 const localUpsertIds = new Set<string>();
 
-// Prevent duplicate realtime subscriptions
-let realtimeSubscribed = false;
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let broadcastChannel: any = null;
-let broadcastReady = false;
-const broadcastQueue: Array<{ event: string; payload: unknown }> = [];
-
-function broadcastSend(event: string, payload: unknown) {
-  if (broadcastChannel && broadcastReady) {
-    broadcastChannel.send({ type: 'broadcast', event, payload });
-  } else {
-    broadcastQueue.push({ event, payload });
-  }
-}
-
-function flushBroadcastQueue() {
-  while (broadcastQueue.length > 0) {
-    const item = broadcastQueue.shift()!;
-    broadcastChannel?.send({ type: 'broadcast', event: item.event, payload: item.payload });
-  }
-}
 
 // Stamp updatedAt on every line mutation
 function touch(line: Line): Line {
@@ -105,8 +84,6 @@ async function pushToSupabase(line: Line): Promise<boolean> {
       updated_at: new Date(line.updatedAt).toISOString(),
     });
     if (error) throw error;
-    // Broadcast to other devices via Realtime
-    broadcastSend('line-update', line);
     return true;
   } catch {
     return false;
@@ -299,7 +276,6 @@ export const useStore = create<Store>()(
         }));
         if (supabase) {
           supabase.from('lines').delete().eq('id', lineId).then(() => {});
-          broadcastSend('line-delete', { id: lineId });
         }
       },
 
@@ -391,36 +367,10 @@ export const useStore = create<Store>()(
       },
 
       subscribeToChanges: () => {
-        if (!supabase || realtimeSubscribed) return;
-        realtimeSubscribed = true;
-        broadcastChannel = supabase
-          .channel('lines-broadcast', { config: { broadcast: { self: false } } })
-          .on('broadcast', { event: 'line-update' }, ({ payload }) => {
-            const remote: Line = payload as Line;
-            if (localUpsertIds.has(remote.id)) return;
-            set((s) => {
-              const local = s.lines.find((l) => l.id === remote.id);
-              if (local && (local.updatedAt ?? 0) > (remote.updatedAt ?? 0)) return s;
-              if (local) return { lines: s.lines.map((l) => l.id === remote.id ? remote : l) };
-              return { lines: [...s.lines, remote] };
-            });
-          })
-          .on('broadcast', { event: 'line-delete' }, ({ payload }) => {
-            const { id } = payload as { id: string };
-            const timer = syncTimers.get(id);
-            if (timer) { clearTimeout(timer); syncTimers.delete(id); }
-            set((s) => ({
-              lines: s.lines.filter((l) => l.id !== id),
-              pendingSync: s.pendingSync.filter((pid) => pid !== id),
-            }));
-          })
-          .subscribe((status) => {
-            console.log('[realtime] subscription status:', status);
-            if (status === 'SUBSCRIBED') {
-              broadcastReady = true;
-              flushBroadcastQueue();
-            }
-          });
+        // Poll every 3 seconds — simpler and works everywhere
+        setInterval(() => {
+          get().mergeFromCloud();
+        }, 3000);
       },
     }),
     {
