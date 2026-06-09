@@ -3,12 +3,15 @@ import { persist } from 'zustand/middleware';
 import type { Line, Geophone } from '../types';
 import { supabase } from '../lib/supabase';
 
+export type SyncStatus = 'saved' | 'saving' | 'pending' | 'error';
+
 interface Store {
   loggedIn: boolean;
   username: string;
   lines: Line[];
   activeLine: string | null;
   activeGeophoneIndex: number;
+  syncStatus: SyncStatus;
 
   login: (username: string) => void;
   logout: () => void;
@@ -30,7 +33,7 @@ interface Store {
   deleteLine: (lineId: string) => void;
 
   syncLine: (lineId: string) => Promise<void>;
-  loadFromCloud: () => Promise<void>;
+  mergeFromCloud: () => Promise<void>;
   subscribeToChanges: () => void;
 }
 
@@ -52,6 +55,12 @@ function makeGeophones(count: number): Geophone[] {
   }));
 }
 
+// Debounce map — avoid hammering Supabase on rapid hits
+const syncTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+// Track our own in-flight upserts so realtime doesn't echo them back
+const localUpsertIds = new Set<string>();
+
 export const useStore = create<Store>()(
   persist(
     (set, get) => ({
@@ -60,6 +69,7 @@ export const useStore = create<Store>()(
       lines: [],
       activeLine: null,
       activeGeophoneIndex: 0,
+      syncStatus: 'saved',
 
       login: (username) => set({ loggedIn: true, username }),
       logout: () => set({ loggedIn: false, username: '', activeLine: null }),
@@ -75,6 +85,7 @@ export const useStore = create<Store>()(
           createdAt: Date.now(),
         };
         set((s) => ({ lines: [...s.lines, line], activeLine: id, activeGeophoneIndex: 0 }));
+        get().syncLine(id);
         return id;
       },
 
@@ -92,6 +103,7 @@ export const useStore = create<Store>()(
             }
           ),
         }));
+        get().syncLine(lineId);
       },
 
       addHit: (lineId, position, invalid = false) => {
@@ -174,6 +186,7 @@ export const useStore = create<Store>()(
             }
           ),
         }));
+        get().syncLine(lineId);
       },
 
       addNote: (lineId, position, text) => {
@@ -203,6 +216,7 @@ export const useStore = create<Store>()(
             }
           ),
         }));
+        get().syncLine(lineId);
       },
 
       addLineNote: (lineId, text) => {
@@ -222,6 +236,7 @@ export const useStore = create<Store>()(
             l.id !== lineId ? l : { ...l, lineNotes: (l.lineNotes ?? []).filter((n) => n.id !== noteId) }
           ),
         }));
+        get().syncLine(lineId);
       },
 
       deleteLine: (lineId) => {
@@ -234,45 +249,41 @@ export const useStore = create<Store>()(
         }
       },
 
-      subscribeToChanges: () => {
-        if (!supabase) return;
-        supabase
-          .channel('lines-changes')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
-            if (payload.eventType === 'DELETE') {
-              const id = (payload.old as { id: string }).id;
-              set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
-            } else {
-              const line: Line = JSON.parse((payload.new as { data: string }).data);
-              set((s) => {
-                const exists = s.lines.find((l) => l.id === line.id);
-                if (exists) {
-                  return { lines: s.lines.map((l) => l.id === line.id ? line : l) };
-                }
-                return { lines: [...s.lines, line] };
-              });
-            }
-          })
-          .subscribe();
-      },
-
       syncLine: async (lineId) => {
-        if (!supabase) return;
-        const line = get().lines.find((l) => l.id === lineId);
-        if (!line) return;
-        try {
-          await supabase.from('lines').upsert({
-            id: line.id,
-            name: line.name,
-            data: JSON.stringify(line),
-            updated_at: new Date().toISOString(),
-          });
-        } catch (e) {
-          console.warn('Sync failed', e);
-        }
+        // Always save locally first (already done via set)
+        // Debounce the cloud push — wait 800ms after last change
+        set({ syncStatus: 'pending' });
+        const existing = syncTimers.get(lineId);
+        if (existing) clearTimeout(existing);
+
+        const timer = setTimeout(async () => {
+          syncTimers.delete(lineId);
+          if (!supabase) return;
+          const line = get().lines.find((l) => l.id === lineId);
+          if (!line) return;
+          set({ syncStatus: 'saving' });
+          localUpsertIds.add(lineId);
+          try {
+            const { error } = await supabase.from('lines').upsert({
+              id: line.id,
+              name: line.name,
+              data: JSON.stringify(line),
+              updated_at: new Date().toISOString(),
+            });
+            if (error) throw error;
+            set({ syncStatus: 'saved' });
+          } catch (e) {
+            console.warn('Sync failed, will retry on next change', e);
+            set({ syncStatus: 'error' });
+          } finally {
+            setTimeout(() => localUpsertIds.delete(lineId), 2000);
+          }
+        }, 800);
+
+        syncTimers.set(lineId, timer);
       },
 
-      loadFromCloud: async () => {
+      mergeFromCloud: async () => {
         if (!supabase) return;
         try {
           const { data } = await supabase
@@ -281,11 +292,54 @@ export const useStore = create<Store>()(
             .order('updated_at', { ascending: false });
           if (!data) return;
           const cloudLines: Line[] = data.map((r) => JSON.parse(r.data));
-          // Replace all lines with cloud version (cloud is source of truth)
-          set({ lines: cloudLines });
+          set((s) => {
+            // Merge: cloud wins for existing lines, keep local-only lines too
+            const cloudMap = new Map(cloudLines.map((l) => [l.id, l]));
+            const localMap = new Map(s.lines.map((l) => [l.id, l]));
+            const merged: Line[] = [];
+            // All cloud lines
+            for (const cl of cloudLines) merged.push(cl);
+            // Local-only lines not yet pushed
+            for (const ll of s.lines) {
+              if (!cloudMap.has(ll.id)) merged.push(ll);
+            }
+            // Push any local lines that aren't in cloud yet
+            for (const ll of s.lines) {
+              if (!cloudMap.has(ll.id)) {
+                get().syncLine(ll.id);
+              }
+            }
+            void localMap;
+            return { lines: merged };
+          });
         } catch (e) {
           console.warn('Load from cloud failed', e);
         }
+      },
+
+      subscribeToChanges: () => {
+        if (!supabase) return;
+        supabase
+          .channel('lines-realtime')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
+            if (payload.eventType === 'DELETE') {
+              const id = (payload.old as { id: string }).id;
+              set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
+              return;
+            }
+            const incoming = payload.new as { id: string; data: string };
+            // Skip if this is our own upsert echoing back
+            if (localUpsertIds.has(incoming.id)) return;
+            const line: Line = JSON.parse(incoming.data);
+            set((s) => {
+              const exists = s.lines.find((l) => l.id === line.id);
+              if (exists) {
+                return { lines: s.lines.map((l) => l.id === line.id ? line : l) };
+              }
+              return { lines: [...s.lines, line] };
+            });
+          })
+          .subscribe();
       },
     }),
     {

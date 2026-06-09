@@ -104,11 +104,11 @@ function Home({ onSelectLine, onNewLine }: {
   onSelectLine: (id: string) => void;
   onNewLine: () => void;
 }) {
-  const { lines, username, logout, loadFromCloud, deleteLine } = useStore();
+  const { lines, username, logout, mergeFromCloud, deleteLine } = useStore();
   const [exportOpen, setExportOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
-  useEffect(() => { loadFromCloud(); }, []);
+  useEffect(() => { mergeFromCloud(); }, []);
 
   function handleDelete(id: string) {
     deleteLine(id);
@@ -607,13 +607,13 @@ function GoToInput({ max, onGo }: { max: number; onGo: (n: number) => void }) {
 type Screen = 'home' | 'new-line' | 'line-setup' | 'recording';
 
 export default function App() {
-  const { loggedIn, setActiveLine, loadFromCloud, subscribeToChanges } = useStore();
+  const { loggedIn, setActiveLine, mergeFromCloud, subscribeToChanges, syncStatus } = useStore();
   const [screen, setScreen] = useState<Screen>('home');
   const [activeId, setActiveId] = useState<string | null>(null);
 
   useEffect(() => {
     if (loggedIn) {
-      loadFromCloud();
+      mergeFromCloud();
       subscribeToChanges();
     }
   }, [loggedIn]);
@@ -631,8 +631,12 @@ export default function App() {
     setScreen('line-setup');
   }
 
+  const syncLabel = syncStatus === 'saving' ? '↑ saving…' : syncStatus === 'pending' ? '● pending' : syncStatus === 'error' ? '✕ no sync' : '✓ saved';
+  const syncClass = `sync-pill sync-${syncStatus}`;
+
   return (
     <>
+      <div className={syncClass}>{syncLabel}</div>
       {screen === 'home' && (
         <Home onSelectLine={openLine} onNewLine={() => setScreen('new-line')} />
       )}
