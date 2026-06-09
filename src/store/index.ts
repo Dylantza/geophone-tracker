@@ -27,10 +27,12 @@ interface Store {
   // Projects
   createProject: (name: string) => string;
   setActiveProject: (id: string) => void;
+  deleteProject: (projectId: string) => void;
 
   // Scan days
   createScanDay: (projectId: string, name: string, date: string) => string;
   setActiveScanDay: (id: string) => void;
+  deleteScanDay: (scanDayId: string) => void;
 
   // Lines
   createLine: (scanDayId: string, name: string, count: number) => string;
@@ -142,6 +144,26 @@ export const useStore = create<Store>()(
 
       setActiveProject: (id) => set({ activeProjectId: id, activeScanDayId: null }),
 
+      deleteProject: (projectId) => {
+        // Delete all scan days and lines under this project
+        const { scanDays, lines } = get();
+        const dayIds = scanDays.filter((d) => d.projectId === projectId).map((d) => d.id);
+        const lineIds = lines.filter((l) => dayIds.includes(l.scanDayId)).map((l) => l.id);
+        lineIds.forEach((id) => { const t = syncTimers.get(`line:${id}`); if (t) { clearTimeout(t); syncTimers.delete(`line:${id}`); } });
+        dayIds.forEach((id) => { const t = syncTimers.get(`scanday:${id}`); if (t) { clearTimeout(t); syncTimers.delete(`scanday:${id}`); } });
+        set((s) => ({
+          projects: s.projects.filter((p) => p.id !== projectId),
+          scanDays: s.scanDays.filter((d) => d.projectId !== projectId),
+          lines: s.lines.filter((l) => !dayIds.includes(l.scanDayId)),
+          pendingSync: s.pendingSync.filter((k) => !lineIds.includes(k.split(':')[1]) && !dayIds.includes(k.split(':')[1]) && k !== `project:${projectId}`),
+        }));
+        if (supabase) {
+          lineIds.forEach((id) => supabase!.from('lines').delete().eq('id', id).then(() => {}));
+          dayIds.forEach((id) => supabase!.from('scan_days').delete().eq('id', id).then(() => {}));
+          supabase.from('projects').delete().eq('id', projectId).then(() => {});
+        }
+      },
+
       // ── Scan days ─────────────────────────────────────────────────────────
 
       createScanDay: (projectId, name, date) => {
@@ -153,6 +175,22 @@ export const useStore = create<Store>()(
       },
 
       setActiveScanDay: (id) => set({ activeScanDayId: id }),
+
+      deleteScanDay: (scanDayId) => {
+        const { lines } = get();
+        const lineIds = lines.filter((l) => l.scanDayId === scanDayId).map((l) => l.id);
+        lineIds.forEach((id) => { const t = syncTimers.get(`line:${id}`); if (t) { clearTimeout(t); syncTimers.delete(`line:${id}`); } });
+        const t = syncTimers.get(`scanday:${scanDayId}`); if (t) { clearTimeout(t); syncTimers.delete(`scanday:${scanDayId}`); }
+        set((s) => ({
+          scanDays: s.scanDays.filter((d) => d.id !== scanDayId),
+          lines: s.lines.filter((l) => l.scanDayId !== scanDayId),
+          pendingSync: s.pendingSync.filter((k) => !lineIds.includes(k.split(':')[1]) && k !== `scanday:${scanDayId}`),
+        }));
+        if (supabase) {
+          lineIds.forEach((id) => supabase!.from('lines').delete().eq('id', id).then(() => {}));
+          supabase.from('scan_days').delete().eq('id', scanDayId).then(() => {});
+        }
+      },
 
       // ── Lines ─────────────────────────────────────────────────────────────
 

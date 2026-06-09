@@ -170,9 +170,10 @@ function ExportModal({ onClose }: { onClose: () => void }) {
 
 // ─── Projects screen ──────────────────────────────────────────────────────────
 function Projects({ onSelect, onExport }: { onSelect: (id: string) => void; onExport: () => void }) {
-  const { projects, scanDays, lines, username, logout, createProject, mergeFromCloud } = useStore();
+  const { projects, scanDays, lines, username, logout, createProject, deleteProject, mergeFromCloud } = useStore();
   const [newName, setNewName] = useState('');
   const [creating, setCreating] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => { mergeFromCloud(); }, []);
 
@@ -208,6 +209,7 @@ function Projects({ onSelect, onExport }: { onSelect: (id: string) => void; onEx
             <div key={proj.id} className="line-card" onClick={() => onSelect(proj.id)}>
               <div className="line-card-header">
                 <div className="line-card-name">{proj.name}</div>
+                <button className="btn-delete-line" onClick={(e) => { e.stopPropagation(); setConfirmDelete(proj.id); }}>✕</button>
               </div>
               <div className="line-card-meta">
                 <span>{projDays.length} scan day{projDays.length !== 1 ? 's' : ''}</span>
@@ -240,18 +242,32 @@ function Projects({ onSelect, onExport }: { onSelect: (id: string) => void; onEx
           </div>
         </div>
       )}
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">DELETE PROJECT?</div>
+            <div className="modal-sub">{projects.find(p => p.id === confirmDelete)?.name} — all scan days and lines will be deleted.</div>
+            <div className="modal-actions">
+              <button className="btn-danger" onClick={() => { deleteProject(confirmDelete); setConfirmDelete(null); }}>DELETE</button>
+              <button className="btn-ghost" onClick={() => setConfirmDelete(null)}>CANCEL</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // ─── Scan Days screen ─────────────────────────────────────────────────────────
 function ScanDays({ projectId, onSelect, onBack }: { projectId: string; onSelect: (id: string) => void; onBack: () => void }) {
-  const { projects, scanDays, lines, createScanDay } = useStore();
+  const { projects, scanDays, lines, createScanDay, deleteScanDay } = useStore();
   const project = projects.find((p) => p.id === projectId)!;
   const days = scanDays.filter((d) => d.projectId === projectId);
   const [creating, setCreating] = useState(false);
   const [newName, setNewName] = useState('');
   const [newDate, setNewDate] = useState(today());
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   function handleCreate() {
     if (!newName.trim()) return;
@@ -278,7 +294,10 @@ function ScanDays({ projectId, onSelect, onBack }: { projectId: string; onSelect
             <div key={day.id} className="line-card" onClick={() => onSelect(day.id)}>
               <div className="line-card-header">
                 <div className="line-card-name">{day.name}</div>
-                <div className="line-card-date">{day.date}</div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <div className="line-card-date">{day.date}</div>
+                  <button className="btn-delete-line" onClick={(e) => { e.stopPropagation(); setConfirmDelete(day.id); }}>✕</button>
+                </div>
               </div>
               <div className="line-card-meta">
                 <span>{dayLines.length} line{dayLines.length !== 1 ? 's' : ''}</span>
@@ -310,6 +329,19 @@ function ScanDays({ projectId, onSelect, onBack }: { projectId: string; onSelect
             <div className="modal-actions">
               <button className="btn-primary" onClick={handleCreate} disabled={!newName.trim()}>CREATE</button>
               <button className="btn-ghost" onClick={() => setCreating(false)}>CANCEL</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {confirmDelete && (
+        <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">DELETE SCAN DAY?</div>
+            <div className="modal-sub">{scanDays.find(d => d.id === confirmDelete)?.name} — all lines will be deleted.</div>
+            <div className="modal-actions">
+              <button className="btn-danger" onClick={() => { deleteScanDay(confirmDelete); setConfirmDelete(null); }}>DELETE</button>
+              <button className="btn-ghost" onClick={() => setConfirmDelete(null)}>CANCEL</button>
             </div>
           </div>
         </div>
