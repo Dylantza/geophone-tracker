@@ -65,6 +65,8 @@ const localUpsertIds = new Set<string>();
 
 // Prevent duplicate realtime subscriptions
 let realtimeSubscribed = false;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let broadcastChannel: any = null;
 
 // Stamp updatedAt on every line mutation
 function touch(line: Line): Line {
@@ -87,11 +89,9 @@ async function pushToSupabase(line: Line): Promise<boolean> {
     });
     if (error) throw error;
     // Broadcast to other devices via Realtime
-    await supabase.channel('lines-broadcast').send({
-      type: 'broadcast',
-      event: 'line-update',
-      payload: line,
-    });
+    if (broadcastChannel) {
+      broadcastChannel.send({ type: 'broadcast', event: 'line-update', payload: line });
+    }
     return true;
   } catch {
     return false;
@@ -284,11 +284,9 @@ export const useStore = create<Store>()(
         }));
         if (supabase) {
           supabase.from('lines').delete().eq('id', lineId).then(() => {});
-          supabase.channel('lines-broadcast').send({
-            type: 'broadcast',
-            event: 'line-delete',
-            payload: { id: lineId },
-          });
+          if (broadcastChannel) {
+            broadcastChannel.send({ type: 'broadcast', event: 'line-delete', payload: { id: lineId } });
+          }
         }
       },
 
@@ -382,7 +380,7 @@ export const useStore = create<Store>()(
       subscribeToChanges: () => {
         if (!supabase || realtimeSubscribed) return;
         realtimeSubscribed = true;
-        supabase
+        broadcastChannel = supabase
           .channel('lines-broadcast', { config: { broadcast: { self: false } } })
           .on('broadcast', { event: 'line-update' }, ({ payload }) => {
             const remote: Line = payload as Line;
