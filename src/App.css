@@ -266,7 +266,7 @@ html, body, #root {
 .geo-chip.replaced .geo-chip-sensor { color: var(--orange); }
 
 /* ── Recording ── */
-.recording-screen { background: var(--bg); }
+.recording-screen { background: var(--bg); overflow-y: auto; }
 
 .geo-nav {
   display: flex;
