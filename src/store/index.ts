@@ -67,6 +67,23 @@ const localUpsertIds = new Set<string>();
 let realtimeSubscribed = false;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 let broadcastChannel: any = null;
+let broadcastReady = false;
+const broadcastQueue: Array<{ event: string; payload: unknown }> = [];
+
+function broadcastSend(event: string, payload: unknown) {
+  if (broadcastChannel && broadcastReady) {
+    broadcastChannel.send({ type: 'broadcast', event, payload });
+  } else {
+    broadcastQueue.push({ event, payload });
+  }
+}
+
+function flushBroadcastQueue() {
+  while (broadcastQueue.length > 0) {
+    const item = broadcastQueue.shift()!;
+    broadcastChannel?.send({ type: 'broadcast', event: item.event, payload: item.payload });
+  }
+}
 
 // Stamp updatedAt on every line mutation
 function touch(line: Line): Line {
@@ -89,9 +106,7 @@ async function pushToSupabase(line: Line): Promise<boolean> {
     });
     if (error) throw error;
     // Broadcast to other devices via Realtime
-    if (broadcastChannel) {
-      broadcastChannel.send({ type: 'broadcast', event: 'line-update', payload: line });
-    }
+    broadcastSend('line-update', line);
     return true;
   } catch {
     return false;
@@ -284,9 +299,7 @@ export const useStore = create<Store>()(
         }));
         if (supabase) {
           supabase.from('lines').delete().eq('id', lineId).then(() => {});
-          if (broadcastChannel) {
-            broadcastChannel.send({ type: 'broadcast', event: 'line-delete', payload: { id: lineId } });
-          }
+          broadcastSend('line-delete', { id: lineId });
         }
       },
 
@@ -403,6 +416,10 @@ export const useStore = create<Store>()(
           })
           .subscribe((status) => {
             console.log('[realtime] subscription status:', status);
+            if (status === 'SUBSCRIBED') {
+              broadcastReady = true;
+              flushBroadcastQueue();
+            }
           });
       },
     }),
