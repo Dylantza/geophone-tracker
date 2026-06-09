@@ -1,8 +1,42 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useStore } from './store';
 import { exportLines } from './lib/export';
 import type { Line } from './types';
 import './App.css';
+
+// ─── Beep ─────────────────────────────────────────────────────────────────────
+function playBeep() {
+  try {
+    const ctx = new AudioContext();
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.frequency.value = 880;
+    osc.type = 'sine';
+    gain.gain.setValueAtTime(0.4, ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.3);
+    osc.start();
+    osc.stop(ctx.currentTime + 0.3);
+  } catch {}
+}
+
+// ─── Timer hook ───────────────────────────────────────────────────────────────
+function useLineTimer(line: Line) {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!line.timerStartedAt) return;
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [line.timerStartedAt]);
+
+  const totalMs = (line.elapsedMs ?? 0) + (line.timerStartedAt ? Date.now() - line.timerStartedAt : 0);
+  const s = Math.floor(totalMs / 1000);
+  const hh = String(Math.floor(s / 3600)).padStart(2, '0');
+  const mm = String(Math.floor((s % 3600) / 60)).padStart(2, '0');
+  const ss = String(s % 60).padStart(2, '0');
+  return `${hh}:${mm}:${ss}`;
+}
 
 // ─── Login ────────────────────────────────────────────────────────────────────
 function Login() {
@@ -56,11 +90,7 @@ function ExportModal({ lines, onClose }: { lines: Line[]; onClose: () => void })
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   function toggle(id: string) {
-    setSelected((s) => {
-      const n = new Set(s);
-      n.has(id) ? n.delete(id) : n.add(id);
-      return n;
-    });
+    setSelected((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
   }
 
   function doExport() {
@@ -89,9 +119,7 @@ function ExportModal({ lines, onClose }: { lines: Line[]; onClose: () => void })
           </label>
         ))}
         <div className="modal-actions">
-          <button className="btn-primary" onClick={doExport} disabled={!filename.trim() || selected.size === 0}>
-            DOWNLOAD
-          </button>
+          <button className="btn-primary" onClick={doExport} disabled={!filename.trim() || selected.size === 0}>DOWNLOAD</button>
           <button className="btn-ghost" onClick={onClose}>CANCEL</button>
         </div>
       </div>
@@ -100,20 +128,12 @@ function ExportModal({ lines, onClose }: { lines: Line[]; onClose: () => void })
 }
 
 // ─── Home ─────────────────────────────────────────────────────────────────────
-function Home({ onSelectLine, onNewLine }: {
-  onSelectLine: (id: string) => void;
-  onNewLine: () => void;
-}) {
+function Home({ onSelectLine, onNewLine }: { onSelectLine: (id: string) => void; onNewLine: () => void }) {
   const { lines, username, logout, mergeFromCloud, deleteLine } = useStore();
   const [exportOpen, setExportOpen] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
 
   useEffect(() => { mergeFromCloud(); }, []);
-
-  function handleDelete(id: string) {
-    deleteLine(id);
-    setConfirmDelete(null);
-  }
 
   return (
     <div className="screen">
@@ -126,13 +146,14 @@ function Home({ onSelectLine, onNewLine }: {
       </header>
 
       <div className="line-list">
-        {lines.length === 0 && (
-          <div className="empty-state">No lines yet. Create your first line.</div>
-        )}
+        {lines.length === 0 && <div className="empty-state">No lines yet. Create your first line.</div>}
         {[...lines].reverse().map((line) => {
           const total = line.geophones.length;
-          const done = line.geophones.filter((g) => g.hits.length >= 3 || g.skipped).length;
+          const done = line.geophones.filter((g) => g.hits.filter(h => !h.invalid).length >= 3 || g.skipped).length;
           const pct = Math.round((done / total) * 100);
+          const totalMs = (line.elapsedMs ?? 0) + (line.timerStartedAt ? Date.now() - line.timerStartedAt : 0);
+          const s = Math.floor(totalMs / 1000);
+          const timeStr = totalMs > 0 ? `${String(Math.floor(s/3600)).padStart(2,'0')}:${String(Math.floor((s%3600)/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}` : null;
           return (
             <div key={line.id} className="line-card" onClick={() => onSelectLine(line.id)}>
               <div className="line-card-header">
@@ -141,12 +162,14 @@ function Home({ onSelectLine, onNewLine }: {
               </div>
               <div className="line-card-meta">
                 <span>{total} geophones</span>
-                <span>{line.hitCounter} hits recorded</span>
+                <span>{line.hitCounter} hits</span>
+                {timeStr && <span>{timeStr}</span>}
+                {line.sensorSpacing && <span>{line.sensorSpacing}m spacing</span>}
               </div>
               <div className="progress-bar">
                 <div className="progress-fill" style={{ width: `${pct}%` }} />
               </div>
-              <div className="progress-label">{pct}% complete</div>
+              <div className="progress-label">{done}/{total} done · {pct}%</div>
             </div>
           );
         })}
@@ -154,9 +177,7 @@ function Home({ onSelectLine, onNewLine }: {
 
       <div className="bottom-actions">
         <button className="btn-primary" onClick={onNewLine}>+ NEW LINE</button>
-        <button className="btn-outline" onClick={() => setExportOpen(true)} disabled={lines.length === 0}>
-          EXPORT
-        </button>
+        <button className="btn-outline" onClick={() => setExportOpen(true)} disabled={lines.length === 0}>EXPORT</button>
       </div>
 
       {exportOpen && <ExportModal lines={lines} onClose={() => setExportOpen(false)} />}
@@ -165,11 +186,9 @@ function Home({ onSelectLine, onNewLine }: {
         <div className="modal-overlay" onClick={() => setConfirmDelete(null)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">DELETE LINE?</div>
-            <div className="modal-sub">
-              {lines.find(l => l.id === confirmDelete)?.name} — all data will be lost.
-            </div>
+            <div className="modal-sub">{lines.find(l => l.id === confirmDelete)?.name} — all data will be lost.</div>
             <div className="modal-actions">
-              <button className="btn-danger" onClick={() => handleDelete(confirmDelete)}>DELETE</button>
+              <button className="btn-danger" onClick={() => { deleteLine(confirmDelete); setConfirmDelete(null); }}>DELETE</button>
               <button className="btn-ghost" onClick={() => setConfirmDelete(null)}>CANCEL</button>
             </div>
           </div>
@@ -200,45 +219,22 @@ function NewLine({ onDone, onBack }: { onDone: (id: string) => void; onBack: () 
       </header>
       <div className="setup-body">
         <div className="setup-label">LINE NAME</div>
-        <input
-          className="field-input big-input"
-          placeholder="e.g. LINE 4"
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          autoFocus
-        />
+        <input className="field-input big-input" placeholder="e.g. LINE 4" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
         <div className="setup-label">NUMBER OF GEOPHONES</div>
-        <input
-          className="field-input big-input"
-          type="number"
-          inputMode="numeric"
-          placeholder="e.g. 88"
-          value={count}
-          onChange={(e) => setCount(e.target.value)}
-          min="1"
-        />
-        <button
-          className="btn-primary full-width"
-          onClick={handleCreate}
-          disabled={!name.trim() || !count || parseInt(count) < 1}
-        >
-          CREATE LINE
-        </button>
+        <input className="field-input big-input" type="number" inputMode="numeric" placeholder="e.g. 88" value={count} onChange={(e) => setCount(e.target.value)} min="1" />
+        <button className="btn-primary full-width" onClick={handleCreate} disabled={!name.trim() || !count || parseInt(count) < 1}>CREATE LINE</button>
       </div>
     </div>
   );
 }
 
 // ─── Line Setup ───────────────────────────────────────────────────────────────
-function LineSetup({ lineId, onStart, onBack }: {
-  lineId: string;
-  onStart: () => void;
-  onBack: () => void;
-}) {
-  const { lines, replaceSensor } = useStore();
+function LineSetup({ lineId, onStart, onBack }: { lineId: string; onStart: () => void; onBack: () => void }) {
+  const { lines, replaceSensor, setSensorSpacing, setAutoAdvance } = useStore();
   const line = lines.find((l) => l.id === lineId)!;
   const [editing, setEditing] = useState<number | null>(null);
   const [repVal, setRepVal] = useState('');
+  const [spacingVal, setSpacingVal] = useState(String(line?.sensorSpacing ?? ''));
 
   function submitReplace(position: number) {
     const n = parseInt(repVal);
@@ -256,6 +252,34 @@ function LineSetup({ lineId, onStart, onBack }: {
         <div className="top-title">{line.name} SETUP</div>
         <button className="btn-primary" onClick={onStart}>START →</button>
       </header>
+
+      {/* Settings row */}
+      <div className="setup-settings">
+        <div className="setup-setting-item">
+          <div className="setup-setting-label">SENSOR SPACING (m)</div>
+          <input
+            className="field-input setup-setting-input"
+            type="number"
+            inputMode="decimal"
+            placeholder="e.g. 10"
+            value={spacingVal}
+            onChange={(e) => setSpacingVal(e.target.value)}
+            onBlur={() => {
+              const n = parseFloat(spacingVal);
+              if (!isNaN(n) && n > 0) setSensorSpacing(lineId, n);
+            }}
+          />
+        </div>
+        <div className="setup-setting-item">
+          <div className="setup-setting-label">AUTO-ADVANCE AT 3 HITS</div>
+          <button
+            className={`toggle-btn ${line.autoAdvance ? 'toggle-on' : ''}`}
+            onClick={() => setAutoAdvance(lineId, !line.autoAdvance)}
+          >
+            {line.autoAdvance ? 'ON' : 'OFF'}
+          </button>
+        </div>
+      </div>
 
       <div className="setup-hint">Tap a geophone to replace its sensor ID</div>
 
@@ -277,15 +301,7 @@ function LineSetup({ lineId, onStart, onBack }: {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">REPLACE SENSOR</div>
             <div className="modal-sub">Position #{editing}</div>
-            <input
-              className="field-input big-input"
-              type="number"
-              inputMode="numeric"
-              placeholder="New sensor ID"
-              value={repVal}
-              onChange={(e) => setRepVal(e.target.value)}
-              autoFocus
-            />
+            <input className="field-input big-input" type="number" inputMode="numeric" placeholder="New sensor ID" value={repVal} onChange={(e) => setRepVal(e.target.value)} autoFocus />
             <div className="modal-actions">
               <button className="btn-primary" onClick={() => submitReplace(editing)}>CONFIRM</button>
               <button className="btn-ghost" onClick={() => setEditing(null)}>CANCEL</button>
@@ -299,8 +315,10 @@ function LineSetup({ lineId, onStart, onBack }: {
 
 // ─── Recording ────────────────────────────────────────────────────────────────
 function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
-  const { lines, activeGeophoneIndex, setActiveGeophone, addHit, undoLastHit, toggleHitValidity, skipGeophone, unskipGeophone, replaceSensor, addNote, deleteNote, addLineNote, deleteLineNote } = useStore();
+  const { lines, activeGeophoneIndex, setActiveGeophone, addHit, undoLastHit, toggleHitValidity, skipGeophone, unskipGeophone, replaceSensor, addNote, deleteNote, addLineNote, deleteLineNote, startTimer, pauseTimer } = useStore();
   const line = lines.find((l) => l.id === lineId)!;
+  const timerStr = useLineTimer(line ?? { elapsedMs: 0, autoAdvance: false } as Line);
+
   const [noteOpen, setNoteOpen] = useState(false);
   const [noteText, setNoteText] = useState('');
   const [lineNoteOpen, setLineNoteOpen] = useState(false);
@@ -309,28 +327,43 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
   const [replaceOpen, setReplaceOpen] = useState(false);
   const [replaceVal, setReplaceVal] = useState('');
   const [overviewOpen, setOverviewOpen] = useState(false);
+  const prevValidHits = useRef(0);
 
   const geo = line?.geophones[activeGeophoneIndex];
   const totalHits = geo?.hits.length ?? 0;
   const validHits = geo?.hits.filter((h) => !h.invalid).length ?? 0;
   const isLast = activeGeophoneIndex === (line?.geophones.length ?? 1) - 1;
 
+  const total = line?.geophones.length ?? 0;
+  const done = line?.geophones.filter((g) => g.hits.filter(h => !h.invalid).length >= 3 || g.skipped).length ?? 0;
+  const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+  const remaining = total - done;
+
+  // Auto-advance + beep when validHits reaches 3
   useEffect(() => {
+    if (!line || !geo) return;
+    if (validHits === 3 && prevValidHits.current < 3) {
+      playBeep();
+      if (line.autoAdvance && !isLast) {
+        setTimeout(() => setActiveGeophone(activeGeophoneIndex + 1), 400);
+      }
+    }
+    prevValidHits.current = validHits;
+  }, [validHits]);
+
+  useEffect(() => {
+    prevValidHits.current = validHits;
     setNoteText('');
   }, [activeGeophoneIndex, lineId]);
 
   if (!line || !geo) return null;
 
   const hitColor = validHits >= 3 ? '#00ff9d' : validHits >= 2 ? '#f5a623' : '#ff4d6d';
+  const isRunning = !!line.timerStartedAt;
 
   function next() { if (!isLast) setActiveGeophone(activeGeophoneIndex + 1); }
   function prev() { if (activeGeophoneIndex > 0) setActiveGeophone(activeGeophoneIndex - 1); }
-
-  function handleSkip() {
-    skipGeophone(lineId, geo.position);
-    next();
-  }
-
+  function handleSkip() { skipGeophone(lineId, geo.position); next(); }
 
   return (
     <div className="screen recording-screen">
@@ -345,6 +378,30 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
           <button className="btn-ghost" onClick={() => setNavOpen(true)}>GO TO</button>
         </div>
       </header>
+
+      {/* Progress bar */}
+      <div className="rec-progress-wrap">
+        <div className="rec-progress-bar">
+          <div className="rec-progress-fill" style={{ width: `${pct}%` }} />
+        </div>
+        <div className="rec-progress-meta">
+          <span>{done}/{total} done</span>
+          <span className="rec-progress-remain">{remaining} left</span>
+        </div>
+      </div>
+
+      {/* Timer bar */}
+      <div className="timer-bar">
+        <span className="timer-display">{timerStr}</span>
+        <button
+          className={`btn-timer ${isRunning ? 'btn-timer-pause' : 'btn-timer-start'}`}
+          onClick={() => isRunning ? pauseTimer(lineId) : startTimer(lineId)}
+        >
+          {isRunning ? '⏸ PAUSE' : '▶ START'}
+        </button>
+        {line.autoAdvance && <span className="auto-badge">AUTO</span>}
+        {line.sensorSpacing && <span className="spacing-badge">{line.sensorSpacing}m</span>}
+      </div>
 
       {/* Geo nav */}
       <div className="geo-nav">
@@ -364,40 +421,22 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
       <div className="hit-display">
         <div className="hit-count" style={{ color: hitColor }}>{validHits}</div>
         <div className="hit-label">VALID HITS</div>
-        {totalHits !== validHits && (
-          <div className="hit-invalid-count">{totalHits - validHits} invalid</div>
-        )}
+        {totalHits !== validHits && <div className="hit-invalid-count">{totalHits - validHits} invalid</div>}
         {geo.hits.length > 0 && (
-          <button className="btn-undo" onClick={() => undoLastHit(lineId, geo.position)}>
-            ↩ UNDO LAST HIT
-          </button>
+          <button className="btn-undo" onClick={() => undoLastHit(lineId, geo.position)}>↩ UNDO LAST HIT</button>
         )}
       </div>
 
-      <div className="global-counter">
-        LINE TOTAL: <strong>{line.hitCounter}</strong> hits
-      </div>
+      <div className="global-counter">LINE TOTAL: <strong>{line.hitCounter}</strong> hits</div>
 
       {/* Big hit button */}
       <div className="action-buttons">
-        <button
-          className="btn-hit"
-          onClick={() => addHit(lineId, geo.position, false)}
-          disabled={geo.skipped}
-        >
-          +1
-        </button>
+        <button className="btn-hit" onClick={() => addHit(lineId, geo.position, false)} disabled={geo.skipped}>+1</button>
       </div>
 
       {/* Secondary actions */}
       <div className="secondary-buttons">
-        <button
-          className="btn-secondary btn-invalid"
-          onClick={() => addHit(lineId, geo.position, true)}
-          disabled={geo.skipped}
-        >
-          INVALID +1
-        </button>
+        <button className="btn-secondary btn-invalid" onClick={() => addHit(lineId, geo.position, true)} disabled={geo.skipped}>INVALID +1</button>
         <button className="btn-secondary btn-note" onClick={() => setNoteOpen(true)}>
           NOTE{geo.notes.length > 0 ? ` (${geo.notes.length})` : ''}
         </button>
@@ -439,17 +478,8 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
               ))}
             </div>
             <div className="note-add-row">
-              <textarea
-                className="field-input note-input"
-                placeholder="Add a note..."
-                value={noteText}
-                onChange={(e) => setNoteText(e.target.value)}
-                rows={2}
-              />
-              <button className="btn-primary" onClick={() => {
-                addNote(lineId, geo.position, noteText);
-                setNoteText('');
-              }} disabled={!noteText.trim()}>ADD</button>
+              <textarea className="field-input note-input" placeholder="Add a note..." value={noteText} onChange={(e) => setNoteText(e.target.value)} rows={2} />
+              <button className="btn-primary" onClick={() => { addNote(lineId, geo.position, noteText); setNoteText(''); }} disabled={!noteText.trim()}>ADD</button>
             </div>
             <button className="btn-ghost full-width" onClick={() => setNoteOpen(false)}>CLOSE</button>
           </div>
@@ -480,18 +510,8 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
               ))}
             </div>
             <div className="note-add-row">
-              <textarea
-                className="field-input note-input"
-                placeholder="e.g. Part 2, new line starts here..."
-                value={lineNoteText}
-                onChange={(e) => setLineNoteText(e.target.value)}
-                rows={2}
-                autoFocus
-              />
-              <button className="btn-primary" onClick={() => {
-                addLineNote(lineId, lineNoteText);
-                setLineNoteText('');
-              }} disabled={!lineNoteText.trim()}>ADD</button>
+              <textarea className="field-input note-input" placeholder="e.g. Part 2, new line starts here..." value={lineNoteText} onChange={(e) => setLineNoteText(e.target.value)} rows={2} autoFocus />
+              <button className="btn-primary" onClick={() => { addLineNote(lineId, lineNoteText); setLineNoteText(''); }} disabled={!lineNoteText.trim()}>ADD</button>
             </div>
             <button className="btn-ghost full-width" onClick={() => setLineNoteOpen(false)}>CLOSE</button>
           </div>
@@ -499,11 +519,7 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
       )}
 
       {overviewOpen && (
-        <OverviewPanel
-          lineId={lineId}
-          onClose={() => setOverviewOpen(false)}
-          onJump={(i) => setActiveGeophone(i)}
-        />
+        <OverviewPanel lineId={lineId} onClose={() => setOverviewOpen(false)} onJump={(i) => setActiveGeophone(i)} />
       )}
 
       {replaceOpen && (
@@ -511,21 +527,9 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-title">REPLACE SENSOR</div>
             <div className="modal-sub">Geophone #{geo.position}</div>
-            <input
-              className="field-input big-input"
-              type="number"
-              inputMode="numeric"
-              placeholder="New sensor ID"
-              value={replaceVal}
-              onChange={(e) => setReplaceVal(e.target.value)}
-              autoFocus
-            />
+            <input className="field-input big-input" type="number" inputMode="numeric" placeholder="New sensor ID" value={replaceVal} onChange={(e) => setReplaceVal(e.target.value)} autoFocus />
             <div className="modal-actions">
-              <button className="btn-primary" onClick={() => {
-                const n = parseInt(replaceVal);
-                if (!isNaN(n) && n > 0) replaceSensor(lineId, geo.position, n);
-                setReplaceOpen(false);
-              }}>CONFIRM</button>
+              <button className="btn-primary" onClick={() => { const n = parseInt(replaceVal); if (!isNaN(n) && n > 0) replaceSensor(lineId, geo.position, n); setReplaceOpen(false); }}>CONFIRM</button>
               <button className="btn-ghost" onClick={() => setReplaceOpen(false)}>CANCEL</button>
             </div>
           </div>
@@ -536,11 +540,7 @@ function Recording({ lineId, onBack }: { lineId: string; onBack: () => void }) {
 }
 
 // ─── Overview Panel ───────────────────────────────────────────────────────────
-function OverviewPanel({ lineId, onClose, onJump }: {
-  lineId: string;
-  onClose: () => void;
-  onJump: (index: number) => void;
-}) {
+function OverviewPanel({ lineId, onClose, onJump }: { lineId: string; onClose: () => void; onJump: (index: number) => void }) {
   const lines = useStore((s) => s.lines);
   const line = lines.find((l) => l.id === lineId)!;
   if (!line) return null;
@@ -557,11 +557,7 @@ function OverviewPanel({ lineId, onClose, onJump }: {
             const valid = g.hits.filter((h) => !h.invalid).length;
             const status = g.skipped ? 'skipped' : valid >= 3 ? 'done' : valid > 0 ? 'partial' : 'empty';
             return (
-              <div
-                key={g.position}
-                className={`ov-chip ov-${status}`}
-                onClick={() => { onJump(i); onClose(); }}
-              >
+              <div key={g.position} className={`ov-chip ov-${status}`} onClick={() => { onJump(i); onClose(); }}>
                 <div className="ov-pos">#{g.position}</div>
                 <div className="ov-sensor">{g.sensorId !== g.position ? `s${g.sensorId}` : ''}</div>
                 <div className="ov-hits">{g.skipped ? '—' : valid}</div>
@@ -584,21 +580,8 @@ function GoToInput({ max, onGo }: { max: number; onGo: (n: number) => void }) {
   const [val, setVal] = useState('');
   return (
     <>
-      <input
-        className="field-input big-input"
-        type="number"
-        inputMode="numeric"
-        placeholder={`1 – ${max}`}
-        value={val}
-        onChange={(e) => setVal(e.target.value)}
-        autoFocus
-      />
-      <button
-        className="btn-primary full-width"
-        onClick={() => { const n = parseInt(val); if (n >= 1 && n <= max) onGo(n); }}
-      >
-        GO
-      </button>
+      <input className="field-input big-input" type="number" inputMode="numeric" placeholder={`1 – ${max}`} value={val} onChange={(e) => setVal(e.target.value)} autoFocus />
+      <button className="btn-primary full-width" onClick={() => { const n = parseInt(val); if (n >= 1 && n <= max) onGo(n); }}>GO</button>
     </>
   );
 }
@@ -610,22 +593,15 @@ export default function App() {
   const { loggedIn, setActiveLine, mergeFromCloud, subscribeToChanges, syncStatus, pendingSync } = useStore();
   const [screen, setScreen] = useState<Screen>('home');
   const [activeId, setActiveId] = useState<string | null>(null);
-
   const flushPending = useStore((s) => s.flushPending);
 
   useEffect(() => {
-    if (loggedIn) {
-      mergeFromCloud();
-      subscribeToChanges();
-    }
+    if (loggedIn) { mergeFromCloud(); subscribeToChanges(); }
   }, [loggedIn]);
 
   useEffect(() => {
     function onVisible() {
-      if (document.visibilityState === 'visible' && loggedIn) {
-        flushPending();
-        mergeFromCloud();
-      }
+      if (document.visibilityState === 'visible' && loggedIn) { flushPending(); mergeFromCloud(); }
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -633,39 +609,22 @@ export default function App() {
 
   if (!loggedIn) return <Login />;
 
-  function openLine(id: string) {
-    setActiveLine(id);
-    setActiveId(id);
-    setScreen('recording');
-  }
-
-  function newLineDone(id: string) {
-    setActiveId(id);
-    setScreen('line-setup');
-  }
+  function openLine(id: string) { setActiveLine(id); setActiveId(id); setScreen('recording'); }
+  function newLineDone(id: string) { setActiveId(id); setScreen('line-setup'); }
 
   const pendingCount = pendingSync.length;
   const syncLabel = syncStatus === 'saving' ? '↑ saving…'
     : syncStatus === 'error' ? `✕ ${pendingCount} unsaved`
     : syncStatus === 'pending' ? `● ${pendingCount} pending`
     : '✓ saved';
-  const syncClass = `sync-pill sync-${syncStatus}`;
 
   return (
     <>
-      <div className={syncClass}>{syncLabel}</div>
-      {screen === 'home' && (
-        <Home onSelectLine={openLine} onNewLine={() => setScreen('new-line')} />
-      )}
-      {screen === 'new-line' && (
-        <NewLine onDone={newLineDone} onBack={() => setScreen('home')} />
-      )}
+      <div className={`sync-pill sync-${syncStatus}`}>{syncLabel}</div>
+      {screen === 'home' && <Home onSelectLine={openLine} onNewLine={() => setScreen('new-line')} />}
+      {screen === 'new-line' && <NewLine onDone={newLineDone} onBack={() => setScreen('home')} />}
       {screen === 'line-setup' && activeId && (
-        <LineSetup
-          lineId={activeId}
-          onStart={() => setScreen('recording')}
-          onBack={() => setScreen('home')}
-        />
+        <LineSetup lineId={activeId} onStart={() => setScreen('recording')} onBack={() => setScreen('home')} />
       )}
       {screen === 'recording' && activeId && (
         <Recording lineId={activeId} onBack={() => setScreen('home')} />

@@ -22,10 +22,14 @@ export interface Line {
   name: string;
   geophones: Geophone[];
   hitCounter: number;
-  lineNotes: Note[];      // multiple notes for the whole line
+  lineNotes: Note[];
   createdAt: number;
-  updatedAt: number;      // ms timestamp — used to pick winner when merging
+  updatedAt: number;
   completedAt?: number;
+  sensorSpacing?: number;   // metres between sensors
+  elapsedMs: number;        // total recorded ms (excludes paused time)
+  timerStartedAt?: number;  // wall-clock ms when timer last resumed, null if paused
+  autoAdvance: boolean;     // move to next geo after 3 valid hits
 }
 
 export interface AppState {

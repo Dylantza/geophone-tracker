@@ -32,6 +32,10 @@ interface Store {
   addLineNote: (lineId: string, text: string) => void;
   deleteLineNote: (lineId: string, noteId: string) => void;
   deleteLine: (lineId: string) => void;
+  setAutoAdvance: (lineId: string, value: boolean) => void;
+  setSensorSpacing: (lineId: string, metres: number) => void;
+  startTimer: (lineId: string) => void;
+  pauseTimer: (lineId: string) => void;
 
   syncLine: (lineId: string) => Promise<void>;
   flushPending: () => Promise<void>;
@@ -116,6 +120,8 @@ export const useStore = create<Store>()(
           lineNotes: [],
           createdAt: Date.now(),
           updatedAt: Date.now(),
+          elapsedMs: 0,
+          autoAdvance: false,
         };
         set((s) => ({ lines: [...s.lines, line], activeLine: id, activeGeophoneIndex: 0 }));
         get().syncLine(id);
@@ -265,6 +271,40 @@ export const useStore = create<Store>()(
         get().syncLine(lineId);
       },
 
+      setAutoAdvance: (lineId, value) => {
+        set((s) => ({ lines: mutateLine(s.lines, lineId, (l) => ({ ...l, autoAdvance: value })) }));
+        get().syncLine(lineId);
+      },
+
+      setSensorSpacing: (lineId, metres) => {
+        set((s) => ({ lines: mutateLine(s.lines, lineId, (l) => ({ ...l, sensorSpacing: metres })) }));
+        get().syncLine(lineId);
+      },
+
+      startTimer: (lineId) => {
+        set((s) => ({
+          lines: mutateLine(s.lines, lineId, (l) => ({
+            ...l,
+            timerStartedAt: l.timerStartedAt ? l.timerStartedAt : Date.now(),
+          })),
+        }));
+        get().syncLine(lineId);
+      },
+
+      pauseTimer: (lineId) => {
+        set((s) => ({
+          lines: mutateLine(s.lines, lineId, (l) => {
+            if (!l.timerStartedAt) return l;
+            return {
+              ...l,
+              elapsedMs: (l.elapsedMs ?? 0) + (Date.now() - l.timerStartedAt),
+              timerStartedAt: undefined,
+            };
+          }),
+        }));
+        get().syncLine(lineId);
+      },
+
       deleteLine: (lineId) => {
         // Cancel any pending debounced sync for this line before it fires
         const timer = syncTimers.get(lineId);
@@ -375,16 +415,16 @@ export const useStore = create<Store>()(
     }),
     {
       name: 'geophone-store',
-      version: 3,
+      version: 4,
       migrate: (persisted: unknown) => {
         const state = persisted as Record<string, unknown>;
         if (!Array.isArray(state.lines)) return state;
         const now = Date.now();
         state.lines = (state.lines as Line[]).map((l) => ({
           ...l,
-          updatedAt: (l as unknown as Record<string, unknown>).updatedAt
-            ? l.updatedAt
-            : now,
+          updatedAt: l.updatedAt ?? now,
+          elapsedMs: l.elapsedMs ?? 0,
+          autoAdvance: l.autoAdvance ?? false,
           lineNotes: Array.isArray(l.lineNotes)
             ? l.lineNotes
             : (l as unknown as Record<string, unknown>).lineNote
