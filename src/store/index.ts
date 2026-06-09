@@ -76,7 +76,7 @@ function mutateLine(lines: Line[], id: string, fn: (l: Line) => Line): Line[] {
 }
 
 async function pushToSupabase(line: Line): Promise<boolean> {
-  if (!supabase) return true; // no cloud configured — treat as success
+  if (!supabase) return true;
   localUpsertIds.add(line.id);
   try {
     const { error } = await supabase.from('lines').upsert({
@@ -86,6 +86,12 @@ async function pushToSupabase(line: Line): Promise<boolean> {
       updated_at: new Date(line.updatedAt).toISOString(),
     });
     if (error) throw error;
+    // Broadcast to other devices via Realtime
+    await supabase.channel('lines-broadcast').send({
+      type: 'broadcast',
+      event: 'line-update',
+      payload: line,
+    });
     return true;
   } catch {
     return false;
@@ -276,7 +282,14 @@ export const useStore = create<Store>()(
           activeLine: s.activeLine === lineId ? null : s.activeLine,
           pendingSync: s.pendingSync.filter((id) => id !== lineId),
         }));
-        if (supabase) supabase.from('lines').delete().eq('id', lineId).then(() => {});
+        if (supabase) {
+          supabase.from('lines').delete().eq('id', lineId).then(() => {});
+          supabase.channel('lines-broadcast').send({
+            type: 'broadcast',
+            event: 'line-delete',
+            payload: { id: lineId },
+          });
+        }
       },
 
       syncLine: async (lineId) => {
@@ -370,30 +383,25 @@ export const useStore = create<Store>()(
         if (!supabase || realtimeSubscribed) return;
         realtimeSubscribed = true;
         supabase
-          .channel('lines-realtime')
-          .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
-            console.log('[realtime] event:', payload.eventType, payload);
-            if (payload.eventType === 'DELETE') {
-              const id = (payload.old as { id: string }).id;
-              const timer = syncTimers.get(id);
-              if (timer) { clearTimeout(timer); syncTimers.delete(id); }
-              set((s) => ({
-                lines: s.lines.filter((l) => l.id !== id),
-                pendingSync: s.pendingSync.filter((pid) => pid !== id),
-              }));
-              return;
-            }
-            const incoming = payload.new as { id: string; data: string };
-            if (localUpsertIds.has(incoming.id)) return;
-            const remote: Line = JSON.parse(incoming.data);
+          .channel('lines-broadcast', { config: { broadcast: { self: false } } })
+          .on('broadcast', { event: 'line-update' }, ({ payload }) => {
+            const remote: Line = payload as Line;
+            if (localUpsertIds.has(remote.id)) return;
             set((s) => {
               const local = s.lines.find((l) => l.id === remote.id);
               if (local && (local.updatedAt ?? 0) > (remote.updatedAt ?? 0)) return s;
-              if (local) {
-                return { lines: s.lines.map((l) => l.id === remote.id ? remote : l) };
-              }
+              if (local) return { lines: s.lines.map((l) => l.id === remote.id ? remote : l) };
               return { lines: [...s.lines, remote] };
             });
+          })
+          .on('broadcast', { event: 'line-delete' }, ({ payload }) => {
+            const { id } = payload as { id: string };
+            const timer = syncTimers.get(id);
+            if (timer) { clearTimeout(timer); syncTimers.delete(id); }
+            set((s) => ({
+              lines: s.lines.filter((l) => l.id !== id),
+              pendingSync: s.pendingSync.filter((pid) => pid !== id),
+            }));
           })
           .subscribe((status) => {
             console.log('[realtime] subscription status:', status);
