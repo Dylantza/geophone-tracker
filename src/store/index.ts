@@ -31,6 +31,7 @@ interface Store {
 
   syncLine: (lineId: string) => Promise<void>;
   loadFromCloud: () => Promise<void>;
+  subscribeToChanges: () => void;
 }
 
 function makeId() {
@@ -228,6 +229,31 @@ export const useStore = create<Store>()(
           lines: s.lines.filter((l) => l.id !== lineId),
           activeLine: s.activeLine === lineId ? null : s.activeLine,
         }));
+        if (supabase) {
+          supabase.from('lines').delete().eq('id', lineId).then(() => {});
+        }
+      },
+
+      subscribeToChanges: () => {
+        if (!supabase) return;
+        supabase
+          .channel('lines-changes')
+          .on('postgres_changes', { event: '*', schema: 'public', table: 'lines' }, (payload) => {
+            if (payload.eventType === 'DELETE') {
+              const id = (payload.old as { id: string }).id;
+              set((s) => ({ lines: s.lines.filter((l) => l.id !== id) }));
+            } else {
+              const line: Line = JSON.parse((payload.new as { data: string }).data);
+              set((s) => {
+                const exists = s.lines.find((l) => l.id === line.id);
+                if (exists) {
+                  return { lines: s.lines.map((l) => l.id === line.id ? line : l) };
+                }
+                return { lines: [...s.lines, line] };
+              });
+            }
+          })
+          .subscribe();
       },
 
       syncLine: async (lineId) => {
@@ -255,11 +281,8 @@ export const useStore = create<Store>()(
             .order('updated_at', { ascending: false });
           if (!data) return;
           const cloudLines: Line[] = data.map((r) => JSON.parse(r.data));
-          set((s) => {
-            const localIds = new Set(s.lines.map((l) => l.id));
-            const newLines = cloudLines.filter((l) => !localIds.has(l.id));
-            return { lines: [...s.lines, ...newLines] };
-          });
+          // Replace all lines with cloud version (cloud is source of truth)
+          set({ lines: cloudLines });
         } catch (e) {
           console.warn('Load from cloud failed', e);
         }

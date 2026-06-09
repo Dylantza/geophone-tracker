@@ -607,9 +607,16 @@ function GoToInput({ max, onGo }: { max: number; onGo: (n: number) => void }) {
 type Screen = 'home' | 'new-line' | 'line-setup' | 'recording';
 
 export default function App() {
-  const { loggedIn, setActiveLine } = useStore();
+  const { loggedIn, setActiveLine, loadFromCloud, subscribeToChanges } = useStore();
   const [screen, setScreen] = useState<Screen>('home');
   const [activeId, setActiveId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (loggedIn) {
+      loadFromCloud();
+      subscribeToChanges();
+    }
+  }, [loggedIn]);
 
   if (!loggedIn) return <Login />;
 
