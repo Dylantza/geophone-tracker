@@ -29,11 +29,22 @@ export async function exportLines(lines: Line[], filename: string) {
     // Data rows
     for (const g of line.geophones) {
       if (g.skipped) continue;
-      const hitsStr = g.hits.map((h) => h.invalid ? `${h.hitNumber}X` : String(h.hitNumber)).join(', ');
-      const dataRow = ws.addRow([g.position, g.sensorId, hitsStr]);
+      const dataRow = ws.addRow([g.position, g.sensorId, '']);
       dataRow.getCell(1).font = FONT_NORMAL;
       dataRow.getCell(2).font = FONT_BOLD;
-      dataRow.getCell(3).font = FONT_NORMAL;
+
+      // Build rich text for hits: invalid hits in red, valid in normal
+      const richText: ExcelJS.RichText[] = [];
+      g.hits.forEach((h, i) => {
+        const sep = i > 0 ? ', ' : '';
+        if (h.invalid) {
+          if (sep) richText.push({ text: sep, font: { ...FONT_NORMAL } });
+          richText.push({ text: String(h.hitNumber), font: { ...FONT_NORMAL, color: { argb: 'FFFF0000' } } });
+        } else {
+          richText.push({ text: sep + String(h.hitNumber), font: { ...FONT_NORMAL } });
+        }
+      });
+      dataRow.getCell(3).value = { richText };
     }
   }
 
