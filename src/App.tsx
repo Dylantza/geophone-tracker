@@ -103,10 +103,10 @@ function ExportModal({ onClose }: { onClose: () => void }) {
     });
   }
 
-  function doExport() {
+  async function doExport() {
     const toExport = lines.filter((l) => selectedLines.has(l.id));
     if (!toExport.length || !filename.trim()) return;
-    exportLines(toExport, filename.trim());
+    await exportLines(toExport, filename.trim());
     onClose();
   }
 
